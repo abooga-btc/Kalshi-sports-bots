@@ -1,0 +1,102 @@
+# Kalshi sports bot configuration.
+# Every key can be overridden by an environment variable of the same name in
+# UPPER_CASE (e.g. EDGE_CENTS=4 python run.py). Secrets are NEVER read from
+# this file - only from environment variables (see .env.example).
+
+[mode]
+dry_run = true                 # true = simulate only. Live trading also needs the --live CLI flag.
+
+[kalshi]
+# Public market data host (no auth). Kalshi also lists https://external-api.kalshi.com/trade-api/v2
+# as the recommended trading host; it returned 403 to unauthenticated requests in testing,
+# so public reads default to the shared host below.
+base_url = "https://api.elections.kalshi.com/trade-api/v2"
+trade_base_url = "https://api.elections.kalshi.com/trade-api/v2"   # signed (live) requests; external-api.kalshi.com returned 403 to signed calls (2026-11-02)
+series = ["KXNFLGAME", "KXNBAGAME"]
+
+[odds]
+base_url = "https://api.the-odds-api.com/v4"
+sports = ["americanfootball_nfl", "basketball_nba"]
+regions = "us"
+min_books = 3                  # need at least this many sportsbooks quoting a game
+monthly_quota = 500            # free tier
+quota_reserve = 20             # never spend the last N requests
+pregame_window_hours = 36      # only pull odds for a sport if a game starts within this window
+max_odds_age_pregame_sec = 3600   # ignore fair values older than this before tip-off/kickoff
+max_odds_age_live_sec = 180       # ignore fair values older than this once the game is live
+
+[strategy]
+edge_cents = 5                 # buy YES when ask <= fair_prob - edge
+trade_size_usd = 10.0
+take_profit_pct = 15.0         # exit when bid value is up this % over entry cost
+stop_loss_pct = 0.0            # 0 = disabled; e.g. 30 = exit when down 30%
+include_fees = true            # include Kalshi's estimated taker fees in entry cost / exit value
+min_price = 0.05               # skip asks below this
+max_price = 0.95               # skip asks above this
+max_spread = 0.06              # skip markets whose yes bid/ask spread is wider than this
+allow_live_entries = true      # allow entries after the game has started
+
+[risk]
+max_open_positions = 5
+max_daily_spend_usd = 50.0
+reentry_cooldown_min = 120     # don't re-buy a game within 2h of exiting it
+
+[loop]
+interval_live_sec = 30         # Kalshi poll interval while any tracked game is live
+interval_idle_sec = 300        # Kalshi poll interval otherwise
+
+[files]
+state_file = "data/state.json"
+trade_log_csv = "data/trades.csv"
+event_log_jsonl = "data/events.jsonl"
+
+# ---------------------------------------------------------------------------
+# Multi-signal entry (see bot/signals.py docstring for the exact formula).
+# score (cents) = odds_edge + contrarian + news ; gated by volume + news block.
+# ---------------------------------------------------------------------------
+[volume]
+# Kalshi game = both team markets summed. Counts are contracts ($1 notional each).
+# Observed 2026-10-29: NFL game volume median ~23k, p75 ~228k (week-ahead games 0.2k-23k);
+# NBA median ~7k, today's games 83k-441k, tomorrow's 9k-25k.
+min_game_volume = 50000        # lifetime contracts traded on the game
+min_game_volume_24h = 5000     # contracts traded in the last 24h
+volume_top_pct = 50            # and must rank in the top 50% of its sport's open games
+
+[contrarian]
+contrarian_enabled = true
+book_window_dollars = 0.03     # count resting bids within 3c of the best bid
+lopsided_share = 0.70          # "lopsided" = the other side has >= 70% of near-top bid depth / taker flow
+book_max_cents = 1.5           # max points from orderbook imbalance (at 100% share)
+flow_max_cents = 2.5           # max points from taker-flow imbalance
+flow_window_hours = 6          # trade-flow lookback
+min_flow_contracts = 1000      # ignore flow signal on thinner tape
+overpay_min_cents = 1.0        # opposing side's Kalshi mid must exceed ITS fair value by > this...
+overpay_max_cents = 2.0        # ...points = excess cents, capped here (overlaps with odds_edge, so kept small)
+drift_min_cents = 3.0          # +bonus if the overpriced side also rose >= this vs Kalshi previous_price
+drift_bonus_cents = 1.0
+contra_max_cents = 5.0         # cap on total contrarian points
+microstructure_refresh_sec = 60
+
+[news]
+news_enabled = true
+news_refresh_sec = 1800        # ESPN injuries+news refresh (NFL injuries payload is ~9 MB)
+news_fresh_hours = 12          # only injury updates / articles newer than this count
+# "Key player" = from ESPN's public stat leaders (refreshed daily):
+#   NBA: top-N scorers this season OR last season (weight 1.0)
+#   NFL: every QB (1.0); top rushers / receivers (nfl_skill_key_weight)
+nba_key_top_n = 75
+nfl_key_rushers = 32
+nfl_key_receivers = 48
+nfl_skill_key_weight = 0.5
+key_players = []               # extra names you consider key (weight 1.0), e.g. ["Kawhi Leonard"]
+non_key_player_weight = 0.15   # everyone else counts this fraction
+article_weight = 0.25          # fresh negative-keyword ESPN article tagged to exactly one team
+news_block_enabled = true
+news_block_threshold = 0.75    # don't buy a team whose fresh negative-news score >= this (key player Out = 1.0)
+news_boost_enabled = true
+news_boost_cents = 2.0         # points = 2c * (min(1,neg_opponent) - min(1,neg_own_team))
+
+[combine]
+relaxed_edge_cents = 0.0       # edge floor when contrarian+news >= strong_signal_cents (never pay above fair)
+strong_signal_cents = 3.0
+min_score_cents = 5.0          # total score needed to buy (pure-odds path = edge_cents above)
